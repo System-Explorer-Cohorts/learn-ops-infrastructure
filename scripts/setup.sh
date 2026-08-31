@@ -1143,6 +1143,54 @@ prompt_github_pat() {
   prompt_required GITHUB_TOKEN "GitHub Personal Access Token" "Paste the token you just generated (starts with ghp_)" true
 }
 
+#######################################
+# GitHub username verification
+#######################################
+
+# Confirms the GH_USERNAME collected earlier actually belongs to the GitHub
+# account behind GITHUB_TOKEN. A case-only mismatch (e.g. 'sobia005' typed vs
+# 'Sobia005' actual) is silently normalized to GitHub's exact casing, since
+# Django's username lookups are case-sensitive and allauth stores GitHub's
+# casing verbatim. A mismatch beyond casing means the token and the typed
+# username belong to different accounts, which is a hard stop.
+verify_github_username() {
+  step "Verifying GitHub username against your token"
+
+  local actual_login
+  actual_login="$(curl -sf -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "${GITHUB_API}/user" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('login',''))" 2>/dev/null || true)"
+
+  if [[ -z "${actual_login}" ]]; then
+    warn "Could not verify your GitHub username via the API — continuing with '${GH_USERNAME}' as entered."
+    section_done "GitHub username verification"
+    return
+  fi
+
+  if [[ "${actual_login}" == "${GH_USERNAME}" ]]; then
+    ok "GitHub username '${GH_USERNAME}' matches your token"
+    section_done "GitHub username verification"
+    return
+  fi
+
+  local actual_lower typed_lower
+  actual_lower="$(printf '%s' "${actual_login}" | tr '[:upper:]' '[:lower:]')"
+  typed_lower="$(printf '%s' "${GH_USERNAME}" | tr '[:upper:]' '[:lower:]')"
+
+  if [[ "${actual_lower}" == "${typed_lower}" ]]; then
+    warn "Casing mismatch: you entered '${GH_USERNAME}', GitHub reports '${actual_login}'."
+    GH_USERNAME="${actual_login}"
+    ok "Using GitHub's exact casing from here on: '${GH_USERNAME}'"
+    section_done "GitHub username verification"
+    return
+  fi
+
+  err "The GitHub username you entered ('${GH_USERNAME}') does not match the account behind this token ('${actual_login}')."
+  warn "Your Personal Access Token belongs to a different GitHub account than the username you confirmed earlier."
+  die "Username/token mismatch — re-run setup and make sure the username and token refer to the same GitHub account."
+}
+
 run_oauth_flow() {
   step "GitHub OAuth authorization"
 
@@ -1194,7 +1242,7 @@ elevate_to_instructor() {
   local py_code
   py_code="$(cat <<'PYEOF'
 from django.contrib.auth.models import User, Group
-u = User.objects.filter(username='__GH_USERNAME__').first()
+u = User.objects.filter(username__iexact='__GH_USERNAME__').first()
 if u is None:
     raise SystemExit('USER_NOT_FOUND')
 g = Group.objects.get(pk=2)
@@ -1721,7 +1769,7 @@ from LearningAPI.models.people import NssUser, NssUserCohort
 from rest_framework.authtoken.models import Token
 
 username = '__GH_USERNAME__'
-u = User.objects.filter(username=username).first()
+u = User.objects.filter(username__iexact=username).first()
 if not u:
     print(f'User {username!r} not found', file=sys.stderr)
     raise SystemExit(1)
@@ -1836,6 +1884,7 @@ main() {
   ensure_github_ssh
   clone_workspace_repos
   collect_config
+  verify_github_username
   setup_student_forks
   write_env_files
   write_instructor_fixture
