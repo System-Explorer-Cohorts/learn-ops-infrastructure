@@ -822,6 +822,25 @@ ensure_fork_exists() {
   die "Fork of ${repo_name} did not become available after ${max_attempts} attempts." >&2
 }
 
+# `git remote rename origin upstream` silently repoints any branch that was
+# tracking origin to track upstream instead (git rewrites branch.<name>.remote
+# as part of the rename). Reset the current branch's tracking back to origin
+# so a bare `git push` goes to the student's fork rather than the course repo.
+fix_branch_tracking() {
+  local repo_dir="$1"
+  local label="$2"
+
+  local current_branch
+  current_branch="$(git -C "${repo_dir}" symbolic-ref --short -q HEAD || true)"
+  [[ -z "${current_branch}" ]] && return 0
+
+  if [[ "$(git -C "${repo_dir}" config --get "branch.${current_branch}.remote" || true)" == "upstream" ]]; then
+    git -C "${repo_dir}" config "branch.${current_branch}.remote" origin
+    git -C "${repo_dir}" config "branch.${current_branch}.merge" "refs/heads/${current_branch}"
+    ok "${label}: ${current_branch} now tracks origin/${current_branch}"
+  fi
+}
+
 # Update git remotes so origin → student fork, upstream → NSS-Workshops.
 # Idempotent: exits early if origin already points to the fork.
 fixup_remotes() {
@@ -841,6 +860,7 @@ fixup_remotes() {
     if ! git -C "${repo_dir}" remote get-url upstream >/dev/null 2>&1; then
       git -C "${repo_dir}" remote add upstream "${upstream_url}"
     fi
+    fix_branch_tracking "${repo_dir}" "${label}"
     return 0
   fi
 
@@ -860,6 +880,8 @@ fixup_remotes() {
 
   ok "${label}: origin  → ${fork_url}"
   ok "${label}: upstream → ${upstream_url}"
+
+  fix_branch_tracking "${repo_dir}" "${label}"
 }
 
 setup_student_forks() {
